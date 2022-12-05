@@ -37,6 +37,11 @@ variable "client_secret" {
 
 variable "address_space" {
   type    = string
+  default = "192.168.248.0/21"
+}
+
+variable "firewall_address_space" {
+  type    = string
   default = "192.168.255.0/24"
 }
 

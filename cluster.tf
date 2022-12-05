@@ -4,6 +4,12 @@ locals {
   kubernetes_cluster_workload_node_pool_orchestrator_version = var.kubernetes_cluster_workload_node_pool_orchestrator_version == null ? local.kubernetes_cluster_orchestrator_version : var.kubernetes_cluster_workload_node_pool_orchestrator_version
 }
 
+resource "azurerm_user_assigned_identity" "cluster" {
+  name                = "id-${local.context_name}-aks"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+}
+
 resource "azurerm_kubernetes_cluster" "main" {
   name                              = "aks-${local.context_name}"
   location                          = azurerm_resource_group.main.location
@@ -26,7 +32,8 @@ resource "azurerm_kubernetes_cluster" "main" {
   }
 
   identity {
-    type = "SystemAssigned"
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.cluster.id]
   }
 
   default_node_pool {
@@ -58,8 +65,7 @@ resource "azurerm_kubernetes_cluster" "main" {
     dns_service_ip     = cidrhost(var.kubernetes_cluster_service_cidr, 10)
     docker_bridge_cidr = var.kubernetes_cluster_docker_bridge_cidr
     service_cidr       = var.kubernetes_cluster_service_cidr
-    load_balancer_sku  = "standard"
-    outbound_type      = "userAssignedNATGateway"
+    outbound_type      = "userDefinedRouting"
   }
 
   dynamic "key_vault_secrets_provider" {
@@ -76,10 +82,15 @@ resource "azurerm_kubernetes_cluster" "main" {
       log_analytics_workspace_id = azurerm_log_analytics_workspace.main.id
     }
   }
+
+  depends_on = [
+    azurerm_role_assignment.cluster_network_contributor
+  ]
 }
 
 resource "azurerm_kubernetes_cluster_node_pool" "main" {
-  name                  = "workload"
+  count                 = local.availability_zones
+  name                  = "agentpool${count.index + 1}"
   kubernetes_cluster_id = azurerm_kubernetes_cluster.main.id
   vm_size               = var.kubernetes_cluster_workload_node_pool_vm_size
   enable_auto_scaling   = true
@@ -89,8 +100,8 @@ resource "azurerm_kubernetes_cluster_node_pool" "main" {
   os_disk_size_gb       = var.kubernetes_cluster_workload_node_pool_os_disk_size_gb
   os_sku                = var.kubernetes_cluster_workload_node_pool_os_sku
   orchestrator_version  = local.kubernetes_cluster_workload_node_pool_orchestrator_version
-  vnet_subnet_id        = azurerm_subnet.cluster.id
-  zones                 = var.kubernetes_cluster_workload_node_pool_availability_zones
+  vnet_subnet_id        = azurerm_subnet.node_pool[count.index].id
+  zones                 = [tostring(count.index + 1)]
   node_labels           = var.kubernetes_cluster_workload_node_pool_labels
   node_taints           = var.kubernetes_cluster_workload_node_pool_taints
 
@@ -101,8 +112,8 @@ resource "azurerm_kubernetes_cluster_node_pool" "main" {
 
 resource "azurerm_role_assignment" "cluster_network_contributor" {
   role_definition_name = "Network Contributor"
-  scope                = azurerm_subnet.cluster.id
-  principal_id         = azurerm_kubernetes_cluster.main.identity.0.principal_id
+  scope                = azurerm_virtual_network.cluster.id
+  principal_id         = azurerm_user_assigned_identity.cluster.principal_id
 }
 
 resource "azurerm_role_assignment" "registry_pull" {
